@@ -11,8 +11,8 @@
 #usage         :bash ipcamera-basher <path to .txt with list of URLs>
 #==============================================================================
 
-echo "pkill -P$$"
-urlfile='cams.txt'
+selfpid=$$
+urlfile="$1"
 preferred_viewer_url='serverpush.html?ds=4'
 
 read_loop () {
@@ -34,16 +34,30 @@ action () { # perform an action when motion detected
   echo "action occurred on http://${hostport[0]}:${hostport[2]}/serverpush.html"
 }
 
+close () {
+  echo $selfpid
+  # kill all children
+  pkill -P $selfpid
+  # remove FIFOs here
+  exit 1
+}
+
+daemon_loop () {
+  while true
+  do
+    sleep 2
+  done
+}
+
 main () {
   mkfifo fifo_grepout
-  exec 7<>fifo_grepout
+  exec 7<>modect_fifo_grepout.$selfpid
 
-  if [ $# -eq 0 ]
+  if [ -z "$urlfile" ]
   then
-    urlfile='cams.txt'
-  else
-    urlfile=$1
+    urlfile="cams.txt"
   fi
+
   camera=1
 
   while read url
@@ -64,8 +78,8 @@ main () {
     # start the tcp session on the specfied bidirectional fd
     echo "Time to start camera number ${camera}!"
     echo "start tcp"
-    exec {fd_tcp}<>fd_tcp_${host}_${port}
-    exec {fd_tcp}<> /dev/tcp/${host}/${port}
+    exec {fd_tcp}<>modect_fd_tcp_${host}_${port}
+    exec {fd_tcp}<>/dev/tcp/${host}/${port}
     
     # feed motion status for this camera into a new fd
     # http://stackoverflow.com/questions/8295908/how-to-use-a-variable-to-indicate-a-file-descriptor-in-bash
@@ -75,6 +89,12 @@ main () {
     start_stream $fd_tcp
     camera=$(( camera + 1 ))
 
-  done < $urlfile
+  done <$urlfile
+}
+
+trap close INT
 
 main
+echo "Spawned all children, go ahead and 'cat <./modect_fifo_grepout.$selfpid' waiting for Ctrl+c..."
+daemon_loop
+exit 0
