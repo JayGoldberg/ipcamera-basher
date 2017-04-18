@@ -14,60 +14,49 @@
 selfpid=$$
 urlfile="$1"
 preferred_viewer_url='serverpush.html?ds=4'
+fifo='fifo_grepout'
 
-read_loop () {
-  while read line
-    do
-    if grep motion &>/dev/null<<< $line
-      then
-        echo "$(date) motion detected on http://${host}:${port}/${preferred_viewer_url}" >&7
-    fi
-  done <&${fd_tcp}
-}
-
-start_stream () {
-  echo "start streaming HTTP to ${host}:${port} by echo to fd $fd_tcp"
-  printf "GET /now.jpg?snap=spush0.1&pragma=motion&noimage HTTP/1.0\r\nConnection: Keep-Alive\r\n\r\n" >&${fd_tcp}
-}
-
-action () { # perform an action when motion detected
-  echo "action occurred on http://${hostport[0]}:${hostport[2]}/serverpush.html"
-}
-
-close () {
+cleanup() {
   echo $selfpid
   # kill all children
   pkill -P $selfpid
   # remove FIFOs here
-  exit 1
+  rm "$fifo"
+}
+
+trap cleanup INT
+
+read_loop() {
+  [[ $# -ne 3 ]] && { echo $LINENO wrong arg count; return 1; }
+  while read line; do
+    grep motion &>/dev/null<<< "$line" && echo "$(date) motion detected on http://${1}:${2}/${preferred_viewer_url}" >&7
+  done <&${3}
+}
+
+start_stream() {
+  [[ $# -ne 3 ]] && { echo $LINENO wrong arg count; return 1; }
+  echo "start streaming HTTP to ${1}:${2} by echo to fd $3"
+  printf "GET /now.jpg?snap=spush0.1&pragma=motion&noimage HTTP/1.0\r\nConnection: Keep-Alive\r\n\r\n" >&${3}
 }
 
 daemon_loop () {
-  while true
-  do
+  while true; do
     sleep 2
   done
 }
 
 main () {
-  mkfifo fifo_grepout
-  exec 7<>modect_fifo_grepout.$selfpid
-
-  if [ -z "$urlfile" ]
-  then
-    urlfile="cams.txt"
-  fi
+  mkfifo "$fifo"
+  exec 7<>${fifo}.${selfpid}
 
   camera=1
 
-  while read url
-  do
+  while read url; do
     # parse the URL
     strip_http=${url#*http\:\/\/}
     strip_path=${strip_http%\/**}
 
-    if [[ `echo $strip_path| grep ':'` ]]
-    then
+    if [[ $(echo $strip_path| grep ':') ]]; then
       port=${strip_path#*:}
       host=${strip_http%:*}
     else
@@ -83,18 +72,19 @@ main () {
     
     # feed motion status for this camera into a new fd
     # http://stackoverflow.com/questions/8295908/how-to-use-a-variable-to-indicate-a-file-descriptor-in-bash
-    echo "start worker"
-    read_loop &
+    echo "start worker for $host $port"
+    read_loop "$host" "$port" "$fd_tcp" &
     echo "child pid is $!"
-    start_stream $fd_tcp
+    start_stream "$host" "$port" "$fd_tcp"
     camera=$(( camera + 1 ))
 
-  done <$urlfile
+  done <"$1"
 }
 
-trap close INT
+input="${1:-'cams.txt'}"
 
-main
-echo "Spawned all children, go ahead and 'cat <./modect_fifo_grepout.$selfpid' waiting for Ctrl+c..."
+main "$input"
+
+echo "Spawned all children, go ahead and \'cat <./${fifo}.$selfpid\' waiting for Ctrl+c..."
 daemon_loop
 exit 0
